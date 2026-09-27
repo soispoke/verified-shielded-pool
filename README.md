@@ -35,11 +35,14 @@ git clone https://github.com/soispoke/minimal-shielded-pool
 cd minimal-shielded-pool
 git checkout 8835be75681dd36bfceaf73bc8c7fbd2b2c4157a
 git clone https://github.com/soispoke/verified-shielded-pool formal
+git apply formal/pool-tooling.patch
 python3 formal/tools/check_formal.py all
 cd formal
 lake exe cache get
 lake build
 ```
+
+[`pool-tooling.patch`](pool-tooling.patch) adds the pool's activation checks from [pool PR 24](https://github.com/soispoke/minimal-shielded-pool/pull/24) and a follow-up that strengthens them. The key tools call these checks. The patch changes only `tooling/`, not the pinned artifacts. Once the pool merges these changes, pin that commit and drop the patch.
 
 `check_formal.py all` checks the statement lock, the artifact hashes of `SPEC.md` §1 and the Lean sources. [The CI workflow](.github/workflows/ci.yml) also recompiles the circuit, regenerates every checked-in data file and runs the differential test of the Lean model against the pool's wallet.
 
