@@ -1,19 +1,27 @@
 name: Formal verification
 
 # The proofs cover one pinned pool commit, so they run on changes to this
-# repository and on demand, never on pool pushes. A manual run can check a
-# candidate pool commit; check_formal.py then reports which pinned artifacts
-# differ from SPEC.md section 1.
+# repository, weekly and on demand, never on pool pushes. A manual run can check
+# a candidate pool commit; check_formal.py then reports which pinned artifacts
+# differ from SPEC.md section 1. Pushes and pull requests reuse the project
+# build of an earlier run; the weekly run and manual runs by default rebuild
+# every project module from source.
 on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 3 * * 1"
   workflow_dispatch:
     inputs:
       pool_ref:
         description: Pool commit to check (defaults to the verified commit)
         required: false
         default: ""
+      full_rebuild:
+        description: Rebuild every project module from source, ignoring the build cache
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -98,6 +106,8 @@ jobs:
     runs-on: ubuntu-latest
     # A from-scratch build of every project module; GitHub caps a job at 360.
     timeout-minutes: 355
+    env:
+      FULL_REBUILD: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_rebuild) }}
     steps:
       - name: Check out the pool at the verified commit
         uses: actions/checkout@v7
@@ -132,7 +142,7 @@ jobs:
           free -h
       - name: Install Lean
         run: |
-          # Build every project module from source, never from a checked-in output.
+          # Never build from a checked-in output; routine runs restore a CI cache below.
           rm -rf formal/.lake
           curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --default-toolchain none
@@ -140,7 +150,17 @@ jobs:
       - name: Fetch the Mathlib build cache
         working-directory: formal
         run: lake exe cache get
+      - name: Restore the project build of an earlier run
+        if: env.FULL_REBUILD != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: formal/.lake/build
+          key: lean-build-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: lean-build-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-
       - name: Build the proofs and audit their axioms and types
+        id: build
+        # Stops early enough to save progress below, so the next run resumes.
+        timeout-minutes: 320
         working-directory: formal
         shell: bash
         env:
@@ -149,6 +169,12 @@ jobs:
         run: |
           lake build 2>&1 | tee "$RUNNER_TEMP/lake-build.log"
           if grep -n 'declaration uses .sorry.' "$RUNNER_TEMP/lake-build.log"; then exit 1; fi
+      - name: Save the project build for later runs
+        if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
+        uses: actions/cache/save@v4
+        with:
+          path: formal/.lake/build
+          key: lean-build-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Recheck the audit, the lock and the sources after the build
         working-directory: formal
         run: |

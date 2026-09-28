@@ -562,13 +562,17 @@ digest in `evidence/2026-09-27-0350/circuit-mutations/`. See `Mutations/README.m
 and precise boundary. All other §6 mutation rows, and the range row for the
 other five checks, remain open.
 
-This repository's CI runs two jobs on pushes to its `main`, on pull requests
-and on demand, each against the pool checked out at `8835be7` with
+This repository's CI runs two jobs on pushes to its `main`, on pull requests,
+weekly and on demand, each against the pool checked out at `8835be7` with
 `pool-tooling.patch` applied; the pool's own CI does not run them. The `formal` job runs no
 unowned repository code before the proofs are checked. It trusts elan's
 installer, fetched from `leanprover/elan`'s `master` branch, and Mathlib's
 prebuilt cache from `lake exe cache get`: Mathlib's declarations are loaded
-from that cache, not rechecked by the kernel. It first runs
+from that cache, not rechecked by the kernel. Runs on pushes and pull requests
+also restore the project's own build from an earlier CI run of this
+repository and rebuild only modules whose sources changed, so they trust
+those earlier outputs in the same way; the weekly run and manual runs with
+`full_rebuild` do not. It first runs
 `tools/check_formal.py` (under `python -I`, so no file beside it can shadow a
 standard module), which checks the statement files against `STATEMENTS.lock` and the artifact
 hashes of §1, and textually rejects, outside comments and string literals,
@@ -583,7 +587,7 @@ the lock except the code-owned differential-test driver
 runs only after the rechecks, a `lakefile.lean`, any committed build output
 under `.lake`, and any symlink or nested `.lake` directory that could hide a
 module from the scan; then,
-with `.lake` removed (so every project module, but not Mathlib, is built from source), `lake build`, failing on any `sorry`
+with `.lake` removed (in a full run every project module, but not Mathlib, is then built from source), `lake build`, failing on any `sorry`
 warning, with `Proofs/AxiomAudit.lean` rejecting any axiom beyond Lean's
 standard three for the principal results and pinning each one's type to its
 claim with a theorem whose own axioms it audits, so a coercion elaboration

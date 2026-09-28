@@ -50,7 +50,7 @@ lake build
 
 ## When CI runs
 
-[The workflow](.github/workflows/ci.yml) runs on pushes to `main`, on pull requests and on demand (Actions, "Formal verification", "Run workflow"). The pool's own CI never runs it. A manual run can take another pool commit; `check_formal.py` then lists the pinned artifacts that differ from `SPEC.md` §1. The `formal-artifacts` job recompiles the circuit and regenerates every checked-in data file. The `formal` job builds every proof from source, audits the axioms and runs the differential test of the Lean model against the pool's wallet.
+[The workflow](.github/workflows/ci.yml) runs on pushes to `main`, on pull requests, weekly and on demand (Actions, "Formal verification", "Run workflow"). The pool's own CI never runs it. Pushes and pull requests reuse the project build of an earlier run and rebuild only changed modules; the weekly run and manual runs by default rebuild every module from source, which takes hours. A run that stops early saves its progress, and the next run resumes from it. A manual run can take another pool commit; `check_formal.py` then lists the pinned artifacts that differ from `SPEC.md` §1. The `formal-artifacts` job recompiles the circuit and regenerates every checked-in data file. The `formal` job builds every proof from source, audits the axioms and runs the differential test of the Lean model against the pool's wallet.
 
 ## When the pool changes
 
