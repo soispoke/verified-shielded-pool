@@ -1,0 +1,8 @@
+PASS: exact JSON/Solidity/zkey key binding and Lean export
+9 pinned-point traces reproduced exactly
+cofactor: exact arithmetic certificate matches
+membership: 31 generated files match exactly
+range: 31 generated files match exactly
+duplicate: 31 generated files match exactly
+sink: 31 generated files match exactly
+pinned dispatcher bytes and generated Lean source match
