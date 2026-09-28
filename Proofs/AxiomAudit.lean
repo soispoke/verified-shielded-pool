@@ -36,21 +36,24 @@ import Groth16.Encoding
 import Proofs.NonVacuityEncoding
 import Proofs.NonVacuityFixtureVerified
 import Groth16.Group
-import Lean.Util.CollectAxioms
-import Lean.Elab.Command
+import Groth16.SubgroupKey
+import Groth16.Cardinality
+import Proofs.Groth16Binding
+import Chain.Dispatcher
+import Mutations.Check
+import Mutations.MembershipCounterexample
+import Mutations.RangeCounterexample
+import Mutations.DuplicateCounterexample
+import Mutations.SinkCounterexample
+import Proofs.PinClaims
+import Proofs.AuditCommand
 
 /-! Fail the build if a checked theorem starts depending on an admission or
 an axiom beyond Lean's standard logical axioms. This audits the named proofs;
 it does not discharge their hypotheses. -/
 
-open Lean Elab Command in
-elab "assert_standard_axioms " n:ident : command => do
-  let name ← liftCoreM <| Lean.Elab.realizeGlobalConstNoOverloadWithInfo n
-  let axioms ← Lean.collectAxioms name
-  let allowed : List Name := [`propext, `choice, `Classical.choice, `Quot.sound]
-  let extra := axioms.filter fun ax => !allowed.contains ax
-  unless extra.isEmpty do
-    throwError "{n} depends on nonstandard axioms: {extra}"
+-- `assert_standard_axioms` is defined in `Proofs.AuditCommand`, which imports
+-- only core Lean, so no module imported here can change what it checks.
 
 assert_standard_axioms MSP.model_theorem
 assert_standard_axioms MSP.c5j
@@ -122,6 +125,7 @@ assert_standard_axioms MSP.Artifacts.AssignmentAssembly.satisfied
 assert_standard_axioms MSP.c1c
 
 assert_standard_axioms MSP.circuit_model
+assert_standard_axioms MSP.main_theorem_of_chain
 assert_standard_axioms MSP.chain_corollary_of_chain
 
 assert_standard_axioms MSP.K_lt
@@ -142,17 +146,138 @@ assert_standard_axioms MSP.Groth16.g1Curve_discriminant_ne_zero
 assert_standard_axioms MSP.Groth16.G1Coordinates.toPoint_coordinates
 assert_standard_axioms MSP.Groth16.G1Coordinates.toPoint_injective
 assert_standard_axioms MSP.Groth16.G1Point.coordinates_toPoint
+assert_standard_axioms MSP.Groth16.fq_neg_one_not_square
+assert_standard_axioms MSP.Groth16.fq2ToField_twistB
+assert_standard_axioms MSP.Groth16.twistCurve_discriminant_ne_zero
+assert_standard_axioms MSP.Groth16.G2Coordinates.toTwistPoint_injective
+assert_standard_axioms MSP.Groth16.TwistPoint.coordinates_toTwistPoint
+assert_standard_axioms MSP.Groth16.Subgroup.pinnedKey_subgroupChecks
+assert_standard_axioms MSP.Groth16.Subgroup.pinnedKey_pointOrders
+assert_standard_axioms MSP.Groth16.Subgroup.g1BasePoint_order
+assert_standard_axioms MSP.Groth16.g1Point_card
+assert_standard_axioms MSP.Groth16.g1BasePoint_generates
+assert_standard_axioms MSP.Groth16.g1Point_exists_unique_scalar
+assert_standard_axioms MSP.Groth16.g1Point_scalar_prime_torsion
+assert_standard_axioms MSP.Groth16.G1Coordinates.toPoint_order
+assert_standard_axioms MSP.Chain.Dispatcher.sender_mismatch_pinned
+assert_standard_axioms MSP.Mutations.satisfied_of_blocks
 
 /-! Pin the statement of every principal result to the locked `Spec` claim, so
-weakening a theorem, for example by adding a hypothesis, fails the build. -/
-example : MSP.C1 := MSP.c1
-example : MSP.C1c := MSP.c1c
-example : MSP.ModelTheorem := MSP.model_theorem
-example : MSP.C6 := MSP.c6
-example : MSP.W1 := MSP.w1
-example : MSP.Composes := MSP.composes
-example : MSP.C1 ∧ MSP.C1c ∧ MSP.ModelTheorem := MSP.circuit_model
-example : MSP.C2 → MSP.C2c → MSP.C8 → MSP.C9 → MSP.C10 → MSP.Refines → MSP.MainTheorem :=
+weakening a theorem, for example by adding a hypothesis, fails the build. Each
+pin is a theorem whose own axioms are audited, so a coercion that elaboration
+inserts to make a weaker proof fit the claim must itself be proved. -/
+theorem pin_c1 : MSP.C1 := MSP.c1
+theorem pin_c1c : MSP.C1c := MSP.c1c
+theorem pin_model_theorem : MSP.ModelTheorem := MSP.model_theorem
+theorem pin_c6 : MSP.C6 := MSP.c6
+theorem pin_w1 : MSP.W1 := MSP.w1
+theorem pin_composes : MSP.Composes := MSP.composes
+theorem pin_circuit_model : MSP.C1 ∧ MSP.C1c ∧ MSP.ModelTheorem := MSP.circuit_model
+theorem pin_main_theorem_of_chain :
+    MSP.C2 → MSP.C2c → MSP.C8 → MSP.C9 → MSP.C10 → MSP.Refines → MSP.MainTheorem :=
   MSP.main_theorem_of_chain
-example : MSP.C2 → MSP.C2c → MSP.C8 → MSP.C9 → MSP.C10 → MSP.Refines → MSP.ChainCorollary :=
+theorem pin_chain_corollary_of_chain :
+    MSP.C2 → MSP.C2c → MSP.C8 → MSP.C9 → MSP.C10 → MSP.Refines → MSP.ChainCorollary :=
   MSP.chain_corollary_of_chain
+
+assert_standard_axioms pin_c1
+assert_standard_axioms pin_c1c
+assert_standard_axioms pin_model_theorem
+assert_standard_axioms pin_c6
+assert_standard_axioms pin_w1
+assert_standard_axioms pin_composes
+assert_standard_axioms pin_circuit_model
+assert_standard_axioms pin_main_theorem_of_chain
+assert_standard_axioms pin_chain_corollary_of_chain
+
+theorem pin_original_c1_iff :
+    MSP.Mutations.C1For MSP.Artifacts.Spend.system ↔ MSP.C1 :=
+  MSP.Mutations.original_c1_iff
+
+assert_standard_axioms pin_original_c1_iff
+
+theorem pin_membership_c1_fails : ¬ MSP.Mutations.C1For MSP.Mutations.Membership.system :=
+  MSP.Mutations.Membership.c1_fails
+
+assert_standard_axioms pin_membership_c1_fails
+
+theorem pin_membership_counterexample : ∃ a : MSP.Assignment,
+    MSP.Mutations.Membership.system.Satisfied a ∧ ¬ MSP.R (MSP.stmtOf a) (MSP.witOf a) :=
+  MSP.Mutations.Membership.counterexample
+
+assert_standard_axioms pin_membership_counterexample
+
+theorem pin_membership_clause : MSP.PinClaims.membershipClause :=
+  MSP.Mutations.Membership.clause_fails
+
+assert_standard_axioms pin_membership_clause
+
+theorem pin_range_c1_fails : ¬ MSP.Mutations.C1For MSP.Mutations.Range.system :=
+  MSP.Mutations.Range.c1_fails
+
+assert_standard_axioms pin_range_c1_fails
+
+theorem pin_range_counterexample : ∃ a : MSP.Assignment,
+    MSP.Mutations.Range.system.Satisfied a ∧ ¬ MSP.R (MSP.stmtOf a) (MSP.witOf a) :=
+  MSP.Mutations.Range.counterexample
+
+assert_standard_axioms pin_range_counterexample
+
+theorem pin_range_clause : MSP.PinClaims.rangeClause :=
+  MSP.Mutations.Range.clause_fails
+
+assert_standard_axioms pin_range_clause
+
+theorem pin_duplicate_c1_fails : ¬ MSP.Mutations.C1For MSP.Mutations.Duplicate.system :=
+  MSP.Mutations.Duplicate.c1_fails
+
+assert_standard_axioms pin_duplicate_c1_fails
+
+theorem pin_duplicate_counterexample : ∃ a : MSP.Assignment,
+    MSP.Mutations.Duplicate.system.Satisfied a ∧ ¬ MSP.R (MSP.stmtOf a) (MSP.witOf a) :=
+  MSP.Mutations.Duplicate.counterexample
+
+assert_standard_axioms pin_duplicate_counterexample
+
+theorem pin_duplicate_clause : MSP.PinClaims.duplicateClause :=
+  MSP.Mutations.Duplicate.clause_fails
+
+assert_standard_axioms pin_duplicate_clause
+
+theorem pin_sink_c1_fails : ¬ MSP.Mutations.C1For MSP.Mutations.Sink.system :=
+  MSP.Mutations.Sink.c1_fails
+
+assert_standard_axioms pin_sink_c1_fails
+
+theorem pin_sink_counterexample : ∃ a : MSP.Assignment,
+    MSP.Mutations.Sink.system.Satisfied a ∧ ¬ MSP.R (MSP.stmtOf a) (MSP.witOf a) :=
+  MSP.Mutations.Sink.counterexample
+
+assert_standard_axioms pin_sink_counterexample
+
+theorem pin_sink_clause : MSP.PinClaims.sinkClause :=
+  MSP.Mutations.Sink.clause_fails
+
+assert_standard_axioms pin_sink_clause
+
+-- Concrete G2 and textbook verifier bindings, separate from bytecode C9.
+assert_standard_axioms MSP.Groth16.cofactorPoint_order
+assert_standard_axioms MSP.Groth16.twistPoint_card_not_scalar_square
+assert_standard_axioms MSP.Groth16.g2Point_natCard
+assert_standard_axioms MSP.Groth16.g2BasePoint_generates
+assert_standard_axioms MSP.Groth16.g2Point_exists_unique_scalar
+assert_standard_axioms MSP.Groth16.twistPoint_mem_g2_iff
+assert_standard_axioms MSP.Groth16.g1Log_spec
+assert_standard_axioms MSP.Groth16.g2Log_spec
+assert_standard_axioms MSP.Groth16.pairingExponent_nonzero_left
+assert_standard_axioms MSP.Groth16.pairingExponent_nonzero_right
+assert_standard_axioms MSP.Groth16.verificationEquation_iff
+assert_standard_axioms MSP.groth16_accepts_iff
+assert_standard_axioms MSP.groth16_accepts_point_orders
+
+private theorem pin_g2_card : MSP.PinClaims.g2Card := MSP.Groth16.g2Point_natCard
+assert_standard_axioms pin_g2_card
+
+private theorem pin_groth16_accepts : MSP.PinClaims.groth16AcceptsIff :=
+  MSP.groth16_accepts_iff
+assert_standard_axioms pin_groth16_accepts

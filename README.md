@@ -16,6 +16,8 @@ A Lean 4 formal verification of the [minimal shielded pool](https://github.com/s
 | `MSP.composes : Composes` | The main theorem implies the chain-level corollary | Proven |
 | `MSP.c6 : C6` | The incremental tree algorithm computes the full tree's root | Proven for the Lean algorithm, not yet for the bytecode |
 | `MSP.w1 : W1` | A concrete shield, publish and spend run settles with no bad event, so the claims are not vacuous | Proven |
+| `Groth16Accepts` | Textbook Groth16 verification for the pinned key, with EIP-197 encoding and the G1 and G2 subgroup checks | Defined and bound; that the deployed verifier computes it (C9) is open |
+| Circuit mutations | Four mutated circuits from `SPEC.md` §6 each admit an assignment that breaks R3, R5, R7 or R8, so their C1 is false | Proven for those four (R5 only for the first input value's check) |
 | C2, C2c, C8, C9, C10, `Refines`, W2 | The deployed bytecode approves exactly the specified transactions, settles within its gas, and refines the model | Open |
 
 Every claim ending in "or the run has a bad event" holds unless the run exhibits a hash collision, a degenerate hash output, a failed Groth16 extraction or a compression break among its own queries. The premises in `SPEC.md` §3 assume such events are infeasible to produce; the proofs do not establish that.
@@ -24,7 +26,7 @@ Every claim ending in "or the run has a bad event" holds unless the run exhibits
 
 ## Trust boundary
 
-The statement files are `SPEC.md`, `Proofs/AxiomAudit.lean` and every module that `Spec.lean` imports. [`STATEMENTS.lock`](STATEMENTS.lock) records their hashes and [`.github/CODEOWNERS`](.github/CODEOWNERS) assigns them to the owner. That binds once branch protection requires code owner review, which is not yet enabled. Lean's kernel checks everything else. CI rejects `sorry`, `admit`, native evaluation, new axioms and unsafe code, and `Proofs/AxiomAudit.lean` checks that each principal result depends only on `propext`, `Classical.choice` and `Quot.sound`.
+The statement files are `SPEC.md`, every module that `Spec.lean` imports, the definitions of the four mutants, `Proofs/PinClaims.lean` and the axiom audit. [`STATEMENTS.lock`](STATEMENTS.lock) records their hashes and [`.github/CODEOWNERS`](.github/CODEOWNERS) assigns them to the owner. That binds once branch protection requires code owner review, which is not yet enabled. Lean's kernel checks everything else. CI rejects `sorry`, `admit`, native evaluation, new axioms and unsafe code, and `Proofs/AxiomAudit.lean` checks that each principal result depends only on `propext`, `Classical.choice` and `Quot.sound`.
 
 ## How to verify
 
@@ -44,11 +46,23 @@ lake build
 
 [`pool-tooling.patch`](pool-tooling.patch) adds the pool's activation checks from [pool PR 24](https://github.com/soispoke/minimal-shielded-pool/pull/24) and a follow-up that strengthens them. The key tools call these checks. The patch changes only `tooling/`, not the pinned artifacts. Once the pool merges these changes, pin that commit and drop the patch.
 
-`check_formal.py all` checks the statement lock, the artifact hashes of `SPEC.md` §1 and the Lean sources. [The CI workflow](.github/workflows/ci.yml) also recompiles the circuit, regenerates every checked-in data file and runs the differential test of the Lean model against the pool's wallet.
+`check_formal.py all` checks the statement lock, the artifact hashes of `SPEC.md` §1 and the Lean sources. After the first build, `lake build` is incremental and takes about a minute.
+
+## When CI runs
+
+[The workflow](.github/workflows/ci.yml) runs on pushes to `main`, on pull requests and on demand (Actions, "Formal verification", "Run workflow"). The pool's own CI never runs it. A manual run can take another pool commit; `check_formal.py` then lists the pinned artifacts that differ from `SPEC.md` §1. The `formal-artifacts` job recompiles the circuit and regenerates every checked-in data file. The `formal` job builds every proof from source, audits the axioms and runs the differential test of the Lean model against the pool's wallet.
+
+## When the pool changes
+
+The proofs cover the pool commit pinned in `SPEC.md` §1 and in the workflow's `POOL_COMMIT`, and the pool's CI warns on pull requests that change a pinned file. To follow a new pool commit, update both pins and `STATEMENTS.lock`, then rerun the checks:
+
+- Changes outside the pinned files (wallet, devnet scripts, docs) need nothing here.
+- A change to the logic, dispatcher or verifier changes only pins today, since the chain half is open; review the Lean transcription of the tree code (C6) against the new Solidity.
+- A change to the circuit is the expensive case. Regenerate the imported R1CS and data files (the tools take `--write`), then repair any circuit proofs whose wire layout moved.
 
 ## Branches
 
-`main` is the reviewed line. `codex/formal-continuation` holds work not yet merged: a bounded proof that the pinned dispatcher bytecode rejects a transaction from the wrong sender, subgroup checks for the verification key points, and circuit mutation evidence.
+`main` is the reviewed line. `codex/formal-continuation` is an older line whose work `main` now includes.
 
 `HANDOFF.md` and `CONTINUATION.md` are working notes for the agents writing the proofs.
 
