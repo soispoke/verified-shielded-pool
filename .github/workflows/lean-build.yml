@@ -1,0 +1,118 @@
+name: Lean build stage
+
+# One stage of the project build, called by ci.yml up to four times in a row.
+# A from-scratch build takes longer than one hosted job may run, so each stage
+# stops its build after 300 minutes, saves it, and the next stage resumes. A
+# build error fails the stage at once; only the time limit hands over.
+on:
+  workflow_call:
+    inputs:
+      pool_ref:
+        type: string
+        default: ""
+      stage:
+        type: number
+        required: true
+      full:
+        description: Start stage 1 without an earlier run's build
+        type: boolean
+        default: false
+    outputs:
+      complete:
+        description: Whether this stage finished the build
+        value: ${{ jobs.build.outputs.complete }}
+
+permissions:
+  contents: read
+
+# Keep equal to POOL_COMMIT in ci.yml.
+env:
+  POOL_COMMIT: 8835be75681dd36bfceaf73bc8c7fbd2b2c4157a
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    outputs:
+      complete: ${{ steps.build.outputs.complete }}
+    steps:
+      - name: Check out the pool at the verified commit
+        uses: actions/checkout@v7
+        with:
+          repository: soispoke/minimal-shielded-pool
+          ref: ${{ inputs.pool_ref || env.POOL_COMMIT }}
+      - name: Check out this repository as formal/
+        uses: actions/checkout@v7
+        with:
+          path: formal
+      - name: Apply the pool tooling changes the proofs use
+        run: git apply formal/pool-tooling.patch
+      - name: Free disk space for the Lean build
+        run: |
+          # The project, Mathlib and the toolchain need about 19 GB; drop
+          # preinstalled toolchains this job does not use.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h / /mnt
+      - name: Add swap
+        run: |
+          # Modules are built one at a time; the heaviest peak near 10 GB on a
+          # 16 GB runner, and swap absorbs the rest of the job's use.
+          sudo fallocate -l 16G /mnt/lean-swap
+          sudo chmod 600 /mnt/lean-swap
+          sudo mkswap /mnt/lean-swap
+          sudo swapon /mnt/lean-swap
+          free -h
+      - name: Install Lean
+        run: |
+          # Never build from a checked-in output; builds resume only from CI caches.
+          rm -rf formal/.lake
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - name: Fetch the Mathlib build cache
+        working-directory: formal
+        run: lake exe cache get
+      - name: Name the build caches
+        id: keys
+        run: |
+          base="lean-build-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}"
+          run="$base-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "save=$run-${{ inputs.stage }}" >> "$GITHUB_OUTPUT"
+          if [ "${{ inputs.stage }}" != 1 ]; then
+            echo "restore=$run-" >> "$GITHUB_OUTPUT"   # this run's previous stage
+          elif [ "${{ inputs.full }}" != true ]; then
+            echo "restore=$base-" >> "$GITHUB_OUTPUT"  # the latest earlier run
+          fi
+      - name: Restore the build to resume
+        if: steps.keys.outputs.restore != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: formal/.lake/build
+          key: ${{ steps.keys.outputs.save }}
+          restore-keys: ${{ steps.keys.outputs.restore }}
+      - name: Build the proofs
+        id: build
+        working-directory: formal
+        shell: bash
+        env:
+          # One module at a time: the heaviest need up to 10 GB each.
+          LEAN_NUM_THREADS: "1"
+        run: |
+          set +e
+          timeout 300m lake build 2>&1 | tee "$RUNNER_TEMP/lake-build.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          if [ "$code" = 124 ]; then
+            echo "complete=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::stopped after 300 minutes; the next stage resumes this build"
+            exit 0
+          fi
+          if [ "$code" != 0 ]; then exit "$code"; fi
+          if grep -n 'declaration uses .sorry.' "$RUNNER_TEMP/lake-build.log"; then exit 1; fi
+          echo "complete=true" >> "$GITHUB_OUTPUT"
+      - name: Save the build for the next stage and later runs
+        if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
+        uses: actions/cache/save@v4
+        with:
+          path: formal/.lake/build
+          key: ${{ steps.keys.outputs.save }}

@@ -572,7 +572,9 @@ from that cache, not rechecked by the kernel. Runs on pushes and pull requests
 also restore the project's own build from an earlier CI run of this
 repository and rebuild only modules whose sources changed, so they trust
 those earlier outputs in the same way; the weekly run and manual runs with
-`full_rebuild` do not. It first runs
+`full_rebuild` start without it. A from-scratch build takes longer than one
+hosted job may run, so the build proceeds one module at a time in up to four
+consecutive jobs, each resuming the build its predecessor in the same run saved. It first runs
 `tools/check_formal.py` (under `python -I`, so no file beside it can shadow a
 standard module), which checks the statement files against `STATEMENTS.lock` and the artifact
 hashes of §1, and textually rejects, outside comments and string literals,

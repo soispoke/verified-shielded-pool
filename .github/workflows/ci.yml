@@ -99,15 +99,12 @@ jobs:
           python -m unittest discover -s formal/Poseidon -p 'test_*.py'
           python -m unittest discover -s formal/Keccak -p 'test_*.py'
 
-  formal:
-    # Only owner-reviewed code (check_formal.py, the owned pool patch, elan,
-    # Lake and Mathlib's cache tool) runs before the proofs are built and
-    # checked; the artifact tooling runs in `formal-artifacts`, on another runner.
+  static:
+    # Only owner-reviewed code (check_formal.py and the owned pool patch) runs
+    # before the proofs are built and checked; the artifact tooling runs in
+    # `formal-artifacts`, on another runner.
     runs-on: ubuntu-latest
-    # A from-scratch build of every project module; GitHub caps a job at 360.
-    timeout-minutes: 355
-    env:
-      FULL_REBUILD: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_rebuild) }}
+    timeout-minutes: 15
     steps:
       - name: Check out the pool at the verified commit
         uses: actions/checkout@v7
@@ -125,16 +122,80 @@ jobs:
           python-version: "3.12"
       - name: Check the statement lock, artifact pins and Lean sources
         run: python -I formal/tools/check_formal.py all
+
+  build-1:
+    needs: static
+    uses: ./.github/workflows/lean-build.yml
+    with:
+      pool_ref: ${{ inputs.pool_ref }}
+      stage: 1
+      full: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_rebuild) }}
+
+  build-2:
+    needs: build-1
+    if: needs.build-1.outputs.complete == 'false'
+    uses: ./.github/workflows/lean-build.yml
+    with:
+      pool_ref: ${{ inputs.pool_ref }}
+      stage: 2
+      full: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_rebuild) }}
+
+  build-3:
+    needs: build-2
+    if: needs.build-2.outputs.complete == 'false'
+    uses: ./.github/workflows/lean-build.yml
+    with:
+      pool_ref: ${{ inputs.pool_ref }}
+      stage: 3
+      full: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_rebuild) }}
+
+  build-4:
+    needs: build-3
+    if: needs.build-3.outputs.complete == 'false'
+    uses: ./.github/workflows/lean-build.yml
+    with:
+      pool_ref: ${{ inputs.pool_ref }}
+      stage: 4
+      full: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.full_rebuild) }}
+
+  formal:
+    # Checks the build the stages finished: the axiom and type audit, the lock
+    # and sources after the build, and the differential test.
+    needs: [build-1, build-2, build-3, build-4]
+    if: always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Require a finished build
+        run: |
+          case "${{ needs.build-1.outputs.complete }} ${{ needs.build-2.outputs.complete }} ${{ needs.build-3.outputs.complete }} ${{ needs.build-4.outputs.complete }}" in
+            *true*) ;;
+            *) echo "::error::the build did not finish in four stages"; exit 1 ;;
+          esac
+      - name: Check out the pool at the verified commit
+        uses: actions/checkout@v7
+        with:
+          repository: soispoke/minimal-shielded-pool
+          ref: ${{ inputs.pool_ref || env.POOL_COMMIT }}
+      - name: Check out this repository as formal/
+        uses: actions/checkout@v7
+        with:
+          path: formal
+      - name: Apply the pool tooling changes the proofs use
+        run: git apply formal/pool-tooling.patch
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
       - name: Free disk space for the Lean build
         run: |
           # The project, Mathlib and the toolchain need about 19 GB; drop
           # preinstalled toolchains this job does not use.
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h / /mnt
-      - name: Add swap for the heaviest modules
+      - name: Add swap
         run: |
-          # Artifacts/Spend.lean peaks near 8 GB and each mutation chunk near
-          # 3.6 GB; the runner has 16 GB. Swap absorbs a brief overlap.
+          # Modules are built one at a time; the heaviest peak near 10 GB on a
+          # 16 GB runner, and swap absorbs the rest of the job's use.
           sudo fallocate -l 16G /mnt/lean-swap
           sudo chmod 600 /mnt/lean-swap
           sudo mkswap /mnt/lean-swap
@@ -142,7 +203,7 @@ jobs:
           free -h
       - name: Install Lean
         run: |
-          # Never build from a checked-in output; routine runs restore a CI cache below.
+          # Never build from a checked-in output; builds resume only from CI caches.
           rm -rf formal/.lake
           curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
             | sh -s -- -y --default-toolchain none
@@ -150,31 +211,20 @@ jobs:
       - name: Fetch the Mathlib build cache
         working-directory: formal
         run: lake exe cache get
-      - name: Restore the project build of an earlier run
-        if: env.FULL_REBUILD != 'true'
+      - name: Restore the finished build
         uses: actions/cache/restore@v4
         with:
           path: formal/.lake/build
-          key: lean-build-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: lean-build-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-
-      - name: Build the proofs and audit their axioms and types
-        id: build
-        # Stops early enough to save progress below, so the next run resumes.
-        timeout-minutes: 320
+          key: lean-build-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-final
+          restore-keys: lean-build-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}-
+      - name: Confirm the build and audit its axioms and types
         working-directory: formal
         shell: bash
         env:
-          # At most three modules at once keeps peak memory within RAM and swap.
-          LEAN_NUM_THREADS: "3"
+          LEAN_NUM_THREADS: "1"
         run: |
           lake build 2>&1 | tee "$RUNNER_TEMP/lake-build.log"
           if grep -n 'declaration uses .sorry.' "$RUNNER_TEMP/lake-build.log"; then exit 1; fi
-      - name: Save the project build for later runs
-        if: always() && (steps.build.outcome == 'success' || steps.build.outcome == 'failure')
-        uses: actions/cache/save@v4
-        with:
-          path: formal/.lake/build
-          key: lean-build-${{ hashFiles('formal/lean-toolchain', 'formal/lake-manifest.json') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Recheck the audit, the lock and the sources after the build
         working-directory: formal
         run: |
